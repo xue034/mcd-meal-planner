@@ -7,7 +7,7 @@
 [![Skill](https://img.shields.io/badge/Type-MCP%20Skill-ffc72c?style=for-the-badge&labelColor=27251F)](https://github.com/xue034/mcd-meal-planner)
 [![Powered by mcd-mcp](https://img.shields.io/badge/Powered%20by-mcd--mcp-FFC72C?style=for-the-badge&labelColor=27251F)](https://open.mcd.cn/mcp)
 [![License](https://img.shields.io/badge/License-MIT-27251F?style=for-the-badge&labelColor=27251F)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-49%20passed-38a169?style=for-the-badge)](tests/test_planner.py)
+[![Tests](https://img.shields.io/badge/tests-68%20passed-38a169?style=for-the-badge)](tests/test_planner.py)
 
 </div>
 
@@ -63,9 +63,10 @@
 | ⚠️ **高钠预警** | 单份钠≥1000mg 的「钠炸弹」自动标记 |
 | 🔄 **调整建议** | 没命中目标时，直接告诉你"换哪个单品能省多少" |
 | 🎟️ **今日券叠加** | 补充当日可领优惠券（不依赖门店定位） |
+| 🏪 **可买性校验** | 对照门店实时菜单过滤买不到的品项，显示真实价格与门店券 |
 | 🔌 **离线可跑** | MCP 不可用时回退本地快照，功能不中断 |
 | 📦 **可编程** | `--json` 输出，便于接入饮食记录工具 |
-| 🧪 **有测试** | 49 个单元测试全部通过 |
+| 🧪 **有测试** | 68 个单元测试全部通过 |
 
 ---
 
@@ -278,7 +279,7 @@ $ python planner.py --kcal 800 --sodium-focus \
 | 行为 | 商业上不划算 | 为什么仍要做 |
 |---|---|---|
 | 明确告知"严格低钠主食不存在" | 削弱"工具有用"的印象 | 控钠人群需要确定性，夸大只会害他们 |
-| 标注 `query-nearby-stores` 不可用 | 暴露能力短板 | 用户信任无价，藏问题会失去口碑 |
+| 早期误判 `query-nearby-stores` 不可用 | 暴露自己的判断错误 | 主动勘误并写进文档，藏着只会误导用户 |
 | **不接 `create-order`** | 放弃最直接的转化指标 | 误下单风险高于转化收益 |
 
 **所有写操作一律不自动化**——不调 `auto-bind-coupons`、`draw-lottery`、`create-order`。本项目是决策辅助工具，不是交易代理。测试用例中有专门的 `test_no_write_operations` 断言这一点。
@@ -342,9 +343,10 @@ mcd-meal-planner/
 ├── planner.py                      计算引擎（零第三方依赖）
 ├── commercial.py                   商业价值模块（会员资产/券/品牌话术）
 ├── toon_parser.py                  TOON 格式解析器
+├── store.py                       门店定位/实时菜单/可买性校验
 ├── SKILL.md                        WorkBuddy Skill 定义
 ├── tests/
-│   └── test_planner.py             49 个单元测试
+│   └── test_planner.py             68 个单元测试
 ├── docs/
 │   └── demo.html                   可视化演示页
 ├── references/
@@ -369,12 +371,14 @@ Ran 49 tests in 1.480s
 OK
 ```
 
-覆盖范围：TOON 解析（9）、数据完整性（5）、参数校验（5）、热量模式（6）、控钠模式（4）、密度模式（2）、**商业模块（12）**、输出格式（6）。
+覆盖范围：TOON 解析（9）、数据完整性（5）、参数校验（5）、热量模式（6）、控钠模式（4）、密度模式（2）、商业模块（12）、**门店模块（17）**、输出格式（6）、勘误完整性（2）。
 
 三个关键测试：
 - `test_lower_sodium_than_heat_mode` —— 断言控钠模式的钠显著低于热量模式（差异化验证）
 - `test_no_write_operations` —— 断言不调用任何写操作接口（安全边界验证）
 - `test_brand_message_avoids_brand_comparison` —— 断言话术不含竞品对比（合规验证）
+- `test_store_query_uses_searchType_2` —— **回归保护**：确保门店查询永远用 `searchType=2`，防止重蹈"误判接口不可用"的覆辙
+- `test_availability_detects_unavailable` —— 验证能检测出门店买不到的品项（实测「雪菜脆笋鸡肉粥」在厦门门店不存在）
 
 ---
 
@@ -392,7 +396,7 @@ OK
 
 ## ⚠️ 已知局限
 
-1. **不支持门店定位**——`query-nearby-stores` 依赖收藏门店，因此不做「就近门店有什么券」查询
+1. **门店定位需要用户告知城市+商圈**——不会自动定位，但 `store.py` 已封装 `searchType=2` 的正确用法
 2. **营养数据为快照**——采集于 2026-10-09，菜品会更新，**以官方实时数据为准**
 3. **不含价格**——未接 `calculate-price`，只做营养维度
 4. **钠上限 2000mg** 依据一般成人膳食建议值，**高血压、肾病患者请遵医嘱**

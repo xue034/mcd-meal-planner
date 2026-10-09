@@ -502,6 +502,258 @@ class TestComboOutput(unittest.TestCase):
         self.assertEqual(len(combos), 1)
 
 
+class TestStoreModule(unittest.TestCase):
+    """门店模块测试（含 searchType=2 勘误的回归保护）"""
+
+    def setUp(self):
+        from store import (
+            Store,
+            MenuItem,
+            StoreCoupon,
+            build_store_query,
+            build_menu_query,
+            build_store_coupon_query,
+            build_price_query,
+            check_availability,
+            parse_stores,
+            parse_menu,
+            parse_store_coupons,
+        )
+        self.Store = Store
+        self.MenuItem = MenuItem
+        self.StoreCoupon = StoreCoupon
+        self._build_store_query = build_store_query
+        self._build_menu_query = build_menu_query
+        self._build_coupon_query = build_store_coupon_query
+        self._build_price_query = build_price_query
+        self._check = check_availability
+        self._parse_stores = parse_stores
+        self._parse_menu = parse_menu
+        self._parse_coupons = parse_store_coupons
+
+    # ---- 勘误回归保护：searchType 必须是 2 ----
+
+    def test_store_query_uses_searchType_2(self):
+        """🔴 回归保护：searchType 必须为 2。
+
+        本项目曾因误用默认值 searchType=1（搜索收藏门店）而错误地
+        断定该接口不可用。searchType=2（按位置搜索）完全可用，
+        且不需要用户预先收藏门店。这个测试防止同类错误再次发生。
+        """
+        params = self._build_store_query("厦门", "思明区")
+        self.assertEqual(
+            params["searchType"],
+            2,
+            "searchType 必须为 2（按位置搜索），否则未收藏用户会收到 600050",
+        )
+        self.assertEqual(params["city"], "厦门")
+        self.assertEqual(params["keyword"], "思明区")
+        self.assertEqual(params["beType"], 1)
+
+    def test_store_query_never_uses_default_search_type(self):
+        """确认构造出的参数永不退化为默认 searchType"""
+        for city, keyword in [("北京", "朝阳区"), ("上海", "浦东"), ("广州", "天河")]:
+            params = self._build_store_query(city, keyword)
+            self.assertNotEqual(params["searchType"], 1)
+
+    # ---- 参数构造 ----
+
+    def test_menu_query_for_pickup(self):
+        """到店自取：orderType=1，不传 beCode"""
+        store = self.Store("1410574", "测试店", "地址", 242)
+        params = self._build_menu_query(store)
+        self.assertEqual(params["orderType"], 1)
+        self.assertEqual(params["beType"], 1)
+        self.assertNotIn("beCode", params)
+
+    def test_menu_query_for_drivethru_requires_becode(self):
+        """得来速缺 beCode 应报错"""
+        store = self.Store("1410574", "测试店", "地址", 0, be_type=5)
+        with self.assertRaises(ValueError):
+            self._build_menu_query(store)
+
+    def test_menu_query_for_drivethru_with_becode(self):
+        """得来速有 beCode 应正常"""
+        store = self.Store("1410574", "测试店", "地址", 0, be_type=5, be_code="B123")
+        params = self._build_menu_query(store)
+        self.assertEqual(params["beCode"], "B123")
+        self.assertEqual(params["orderType"], 1)
+
+    def test_price_query_structure(self):
+        """核价参数结构正确"""
+        store = self.Store("1410574", "测试店", "地址", 242)
+        params = self._build_price_query(
+            store, [{"productCode": "1100", "quantity": 1}]
+        )
+        self.assertEqual(len(params["items"]), 1)
+        self.assertIn("storeCode", params)
+
+    def test_coupon_query_structure(self):
+        """门店券查询参数结构正确"""
+        store = self.Store("1410574", "测试店", "地址", 242)
+        params = self._build_coupon_query(store)
+        self.assertEqual(params["storeCode"], "1410574")
+
+    # ---- 解析 ----
+
+    def test_parse_stores_real_response(self):
+        """解析真实门店返回（简化结构）"""
+        raw = """{"success":true,"data":[
+            {"storeCode":"1410574","storeName":"麦当劳厦门湖滨南路餐厅",
+             "address":"湖滨南路与金榜路交叉口","distance":242,
+             "businessStatus":true,"businessStartTime":"07:00",
+             "businessEndTime":"22:00","reservation":true},
+            {"storeCode":"1410061","storeName":"麦当劳厦门梧村餐厅",
+             "address":"厦禾路923号","distance":891,
+             "businessStatus":true,"businessStartTime":"07:00",
+             "businessEndTime":"23:00","reservation":false}]}"""
+        stores = self._parse_stores(raw)
+        self.assertEqual(len(stores), 2)
+        self.assertEqual(stores[0].store_code, "1410574")
+        self.assertEqual(stores[0].distance, 242)
+        self.assertTrue(stores[0].supports_reservation)
+        self.assertFalse(stores[1].supports_reservation)
+
+    def test_parse_menu_real_response(self):
+        """解析真实菜单返回"""
+        raw = """{"success":true,"data":{
+            "categories":[
+                {"name":"巨无霸\\n牛鱼肉堡","meals":[{"code":"1100","tags":["单品"]}]},
+                {"name":"鸡肉汉堡\\n/卷","meals":[
+                    {"code":"9900005462","tags":["套餐","立省10.5元起"]}]},
+                {"name":"饮品","meals":[{"code":"9900008751","tags":["冷饮"]}]}],
+            "meals":{
+                "1100":{"name":"巨无霸","currentPrice":"26","originalPrice":"26",
+                        "discountType":null},
+                "9900005462":{"name":"板烧鸡腿堡三件套","currentPrice":"34.5",
+                              "originalPrice":"48","discountType":null},
+                "9900008751":{"name":"可乐","currentPrice":"9.5",
+                             "originalPrice":"9.5","discountType":null}}}}"""
+        items = self._parse_menu(raw)
+        self.assertEqual(len(items), 3)
+        big_mac = next(i for i in items if i.code == "1100")
+        self.assertEqual(big_mac.name, "巨无霸")
+        self.assertEqual(big_mac.current_price, 26.0)
+
+    def test_parse_menu_captures_discount(self):
+        """应解析出折扣信息"""
+        raw = """{"success":true,"data":{
+            "categories":[{"name":"巨无霸","meals":[{"code":"9900000888","tags":[]}]}],
+            "meals":{"9900000888":{"name":"巨无霸四件套","currentPrice":"32",
+            "originalPrice":"59.5","discountType":"随单购麦金卡优惠"}}}}"""
+        items = self._parse_menu(raw)
+        self.assertTrue(items[0].is_discounted)
+        self.assertAlmostEqual(items[0].discount_amount, 27.5, places=1)
+
+    def test_parse_store_coupons_real_response(self):
+        """解析真实门店券返回"""
+        raw = """{"success":true,"data":[
+            {"title":"薯薯任选","couponId":"E86377","couponCode":"MCD60017",
+             "tradeDateTime":"2026-10-05 10:30:00-2026-10-09 23:59:59",
+             "products":[{"productCode":"9900016370","productName":"薯薯任选"}]}]}"""
+        coupons = self._parse_coupons(raw)
+        self.assertEqual(len(coupons), 1)
+        self.assertEqual(coupons[0].title, "薯薯任选")
+        self.assertTrue(coupons[0].applies_to("9900016370"))
+        self.assertFalse(coupons[0].applies_to("1100"))
+
+    # ---- 可买性校验（核心功能）-----
+
+    def _menu(self):
+        return [
+            self.MenuItem("1100", "巨无霸", 26.0, 26.0),
+            self.MenuItem("4810", "薯条", 14.5, 14.5),
+            self.MenuItem("9900008751", "可乐", 9.5, 9.5),
+        ]
+
+    def test_availability_all_available(self):
+        """全部可买场景"""
+        rep = self._check(["巨无霸", "薯条", "可乐"], self._menu())
+        self.assertTrue(rep.all_available)
+        self.assertEqual(rep.coverage, 100.0)
+        self.assertAlmostEqual(rep.total_price, 50.0, places=1)
+
+    def test_availability_detects_unavailable(self):
+        """🔴 核心：能检测出门店买不到的品项
+
+        实测发现「雪菜脆笋鸡肉粥」在厦门门店不存在，
+        但它在营养库中存在——这正是需要可买性校验的原因。
+        """
+        rep = self._check(["巨无霸", "雪菜脆笋鸡肉粥"], self._menu())
+        self.assertFalse(rep.all_available)
+        self.assertIn("雪菜脆笋鸡肉粥", rep.unavailable)
+        self.assertEqual(rep.coverage, 50.0)
+
+    def test_availability_fuzzy_match_with_brackets(self):
+        """括号差异应能模糊匹配"""
+        menu = [self.MenuItem("X1", "儿童鱼排堡（鱼排）", 20.0, 20.0)]
+        rep = self._check(["儿童鱼排堡"], menu)
+        self.assertEqual(len(rep.available), 1)
+
+    def test_availability_matches_store_coupon(self):
+        """应匹配出适用于组合品项的门店券"""
+        coupons = [
+            self.StoreCoupon("薯薯任选", "C1", "CODE1", "", "2026-10-09",
+                             ["4810"], ["薯条"])
+        ]
+        rep = self._check(["巨无霸", "薯条"], self._menu(), coupons)
+        self.assertEqual(len(rep.usable_coupons), 1)
+
+    def test_availability_no_coupon_match(self):
+        """不适用时不应匹配到券"""
+        coupons = [
+            self.StoreCoupon("麦旋风任选", "C2", "CODE2", "", "2026-10-09",
+                             ["9999"], ["麦旋风任选1"])
+        ]
+        rep = self._check(["巨无霸", "薯条"], self._menu(), coupons)
+        self.assertEqual(len(rep.usable_coupons), 0)
+
+    def test_availability_empty_recommendation(self):
+        """空推荐不崩溃"""
+        rep = self._check([], self._menu())
+        self.assertEqual(rep.coverage, 0.0)
+
+
+class TestCorrectionIntegrity(unittest.TestCase):
+    """勘误完整性检查：防止错误判断被重新写入文档"""
+
+    def test_docs_contain_correction_notice(self):
+        """README 必须包含 searchType=2 的勘误说明"""
+        import os
+
+        readme_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "README.md",
+        )
+        with open(readme_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn(
+            "searchType=2",
+            content,
+            "README 必须写明 searchType=2 的正确用法",
+        )
+        self.assertIn(
+            "勘误",
+            content,
+            "README 必须包含勘误说明，不得静默修改历史判断",
+        )
+
+    def test_store_module_documents_the_mistake(self):
+        """store.py 必须在文档字符串中记录这个错误"""
+        import os
+        import inspect
+
+        import store
+
+        docstring = inspect.getdoc(store) or ""
+        self.assertIn(
+            "searchType=2",
+            docstring,
+            "store.py 必须记录正确用法，防止后来者重蹈覆辙",
+        )
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("麦麦营养配餐助手 · 单元测试")

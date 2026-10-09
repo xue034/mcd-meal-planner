@@ -79,7 +79,13 @@ python planner.py --kcal 800 --sodium-report
 
 调用 MCP 工具 `available-coupons` 拉取用户当前可领/已领的券，标注哪些能用于本次推荐。
 
-**关键：不调用 `query-nearby-stores`**。该接口对未收藏门店的用户返回 `600050`，会直接失败。券信息直接来自用户账户。
+**关键：门店定位要用 `searchType=2`**。
+
+⚠️ 勘误：本 Skill 早期版本误判该接口不可用。实测 `searchType=1`（搜收藏门店）确实返回 `600050`，但 **`searchType=2`（按位置搜索）完全可用**，无需收藏任何门店。
+
+正确用法：`build_store_query("厦门", "思明区")` → `{'beType':1,'searchType':2,...}`
+
+若用户不指定门店，可退回 `available-coupons` 拿账户级券（不依赖门店）。
 
 ### 第四步：输出（控钠场景必须加的解释）
 
@@ -121,14 +127,14 @@ python planner.py --kcal 800 --sodium-report
 | `planner.py` 控钠模式 | 800kcal/1200mg 上限 → 钠 553mg，避开所有高钠单品 |
 | `planner.py` 密度模式 | 钠密度 71.5 mg/100kcal，显著低于热量模式 |
 | `toon_parser.py` | 往返转换一致、空值/空行/字段缺失/异常输入均正确处理 |
-| `tests/test_planner.py` | 49 个单元测试全部通过 |
+| `tests/test_planner.py` | 68 个单元测试全部通过 |
 
 ## 失败回退 (Failure Fallback)
 
 | 故障 | 现象 | 处理 |
 |---|---|---|
 | MCP 未加载 | 找不到 `mcd-mcp` 工具 | 提示去连接器页确认启用；**配餐功能不受影响**，`planner.py` 用本地快照离线可跑 |
-| `query-nearby-stores` 失败 | 报 `600050 收藏餐厅列表为空` | **已知问题，不要重试**。改用 `available-coupons` 拿券 |
+| `query-nearby-stores` 报 `600050` | 多为 `searchType` 用了默认值 1（搜收藏门店） | **改为 `searchType=2` 重试**，按城市+商圈搜索即可，无需收藏 |
 | `list-nutrition-foods` 超时 | 无响应 | 直接用 `references/nutrition-data.json` 快照，不阻塞用户 |
 | TOON 解析失败 | `ToonParseError` | 检查是否接口返回格式变更；`toon_parser.py` 有防御性处理，字段缺失会补齐而非崩溃 |
 | 热量目标不可达 | 用户要 300 kcal | 明确告知无法满足，给出可行最小值（实测约 315 kcal：苹果片+小杯鲜萃咖啡+小薯条） |
@@ -137,7 +143,7 @@ python planner.py --kcal 800 --sodium-report
 
 ## 已知局限（诚实声明，勿淡化）
 
-1. **不支持门店定位**——`query-nearby-stores` 依赖收藏门店，因此不做「就近门店有什么券」
+1. **门店定位需用户告知城市+商圈**——`store.py` 已封装 `searchType=2` 正确用法，不再是能力缺失
 2. **营养数据为快照**——采集于 2026-10-09，菜品会更新，**以官方实时数据为准**
 3. **不含价格**——未接 `calculate-price`，只做营养维度
 4. **钠上限 2000mg** 依据一般成人膳食建议值，**高血压、肾病患者请遵医嘱**
