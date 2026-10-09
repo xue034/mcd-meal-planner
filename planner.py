@@ -3,13 +3,19 @@
 麦麦营养配餐计算引擎 (mcd-meal-planner)
 ========================================
 
-基于麦当劳中国 MCP Server 真实返回的营养数据，为用户按热量/蛋白目标
+基于麦当劳中国 MCP Server 真实返回的营养数据，为用户按热量/蛋白/钠目标
 计算最优套餐组合，并给出与目标的差值和调整建议。
+
+三种模式：
+1. 热量模式（默认）—— 按热量与蛋白配餐
+2. 控钠模式（--sodium-focus）—— 按钠摄入上限配餐，**本项目差异化核心**
+3. 控钠密度模式（--density-focus）—— 按钠密度(mg/100kcal)排序，避开"高钠陷阱"
 
 设计原则：
 1. 数据来源可追溯 —— 全部营养数值来自 MCP list-nutrition-foods 接口真实返回
 2. 离线可运行 —— MCP 不可用时回退到本地快照，不阻塞用户
 3. 输出可验证 —— 每个套餐都给出精确到克的数值，不用模糊描述
+4. 诚实告知无解 —— 目标不可达时明确说明，不做虚假承诺
 
 数据字段说明：
   kcal  能量（千卡）
@@ -24,8 +30,14 @@
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
+
+# 允许以脚本方式直接运行
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from toon_parser import parse_nutrition_toon  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 数据加载
@@ -67,6 +79,27 @@ class Item:
     def category_cn(self) -> str:
         return CATEGORY_NAMES.get(self.category, self.category)
 
+    @property
+    def sodium_density(self) -> float:
+        """钠密度：每 100 千卡含钠毫克数。
+
+        这是本项目的核心指标之一。传统做法只看「总钠」，但同样1000mg钠
+        分配到 2000kcal 和 400kcal 上，健康影响完全不同。
+
+        典型对比（实测数据）：
+            雪菜脆笋鸡肉粥  120kcal  552mg→ 460.0 mg/100kcal
+            巨无霸          513kcal961mg → 187.3 mg/100kcal
+        低热量≠低钠，粥类是高钠陷阱。
+        """
+        if self.kcal <= 0:
+            return 0.0
+        return round(self.sodium / self.kcal * 100, 1)
+
+    @property
+    def is_sodium_bomb(self) -> bool:
+        """是否高钠单品（单份钠占成人建议上限 50% 以上）。"""
+        return self.sodium >= 1000
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
@@ -77,6 +110,7 @@ class Item:
             "sodium": self.sodium,
             "calcium": self.calcium,
             "category": self.category,
+            "sodium_density": self.sodium_density,
         }
 
 
@@ -104,6 +138,37 @@ def load_items() -> List[Item]:
     ]
 
 
+def load_items_from_toon(toon_text: str) -> List[Item]:
+    """从 MCP 原始 TOON 响应构建 Item 列表。
+
+    这是接入实时数据的路径：调用 list-nutrition-foods → 得到 TOON 文本
+    → 交给 toon_parser 解析 → 构建 Item。
+
+    Args:
+        toon_text: MCP list-nutrition-foods 接口的原始返回
+
+    Returns:
+        Item 列表
+
+    Raises:
+        toon_parser.ToonParseError: TOON 格式不合法
+    """
+    records = parse_nutrition_toon(toon_text)
+    return [
+        Item(
+            name=r["name"],
+            kcal=r.get("kcal", 0),
+            protein=r.get("protein", 0),
+            fat=r.get("fat", 0),
+            carb=r.get("carb", 0),
+            sodium=r.get("sodium", 0),
+            calcium=r.get("calcium", 0),
+            category="unknown",
+        )
+        for r in records
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 营养计算
 # ---------------------------------------------------------------------------
@@ -119,16 +184,22 @@ class Target:
     sodium_limit: int = 2000
     #: 允许的最大热量偏差（千卡）
     tolerance: int = 60
+    #: 允许的最大钠偏差（毫克）
+    sodium_tolerance: int = 200
     #: 是否允许甜品
     allow_dessert: bool = False
     #: 排除的品类
     exclude_categories: List[str] = field(default_factory=list)
+    #: 规划模式：heat（热量优先）| sodium（控钠优先）| density（钠密度优先）
+    mode: str = "heat"
 
     def validate(self) -> None:
         if self.kcal <= 0:
             raise ValueError("热量目标必须大于 0")
         if self.protein < 0:
             raise ValueError("蛋白目标不能为负数")
+        if self.sodium_limit <= 0:
+            raise ValueError("钠上限必须大于 0")
         if self.protein > self.kcal // 4:
             raise ValueError(
                 f"蛋白目标 {self.protein}g 相对热量目标 {self.kcal}kcal 不合理"
@@ -177,6 +248,22 @@ class Combo:
     def total_calcium(self) -> int:
         return sum(i.calcium for i in self.items)
 
+    @property
+    def total_sodium_density(self) -> float:
+        """整套餐的钠密度（mg/100kcal）。
+
+        比「总钠」更能反映实际负担：同样1500mg钠，分配到 2000kcal 上
+        负担远低于分配到 500kcal 上。
+        """
+        if self.total_kcal <= 0:
+            return 0.0
+        return round(self.total_sodium / self.total_kcal * 100, 1)
+
+    @property
+    def has_sodium_bomb(self) -> bool:
+        """套餐中是否含高钠单品（单份钠≥1000mg）。"""
+        return any(i.is_sodium_bomb for i in self.items)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "items": [i.to_dict() for i in self.items],
@@ -188,6 +275,8 @@ class Combo:
                 "sodium": self.total_sodium,
                 "calcium": self.total_calcium,
             },
+            "sodium_density": self.total_sodium_density,
+            "has_sodium_bomb": self.has_sodium_bomb,
         }
 
 
@@ -221,24 +310,54 @@ def _candidates(items: List[Item], target: Target) -> Dict[str, List[Item]]:
 def _score(combo: Combo, target: Target) -> float:
     """给组合打分，分数越低越优。
 
-    评分维度：
-    1. 热量贴近度（权重最高）
-    2. 蛋白达标度
-    3. 钠惩罚（超上限重罚）
+    三种模式对应不同的权重策略：
+
+    heat（默认）—— 热量贴近度优先
+        1. 热量偏离度（权重最高）
+        2. 蛋白缺口
+        3. 钠超限惩罚
+
+    sodium（--sodium-focus）—— 控钠优先
+        1. 钠超限量（极重权重，控钠场景下钠是硬约束）
+        2. 钠密度（同等钠量下密度越低越好）
+        3. 热量偏离（次要，但仍需命中）
+
+    density（--density-focus）—— 避开高钠陷阱
+        1. 钠密度（权重最高，直接按密度排序）
+        2. 热量偏离
+        3. 蛋白
     """
     kcal_gap = abs(combo.total_kcal - target.kcal)
+    sodium_over = max(0, combo.total_sodium - target.sodium_limit)
+    protein_gap = max(0, target.protein - combo.total_protein)
 
-    # 热量每偏离 1 kcal 的代价
-    score = float(kcal_gap) * 1.0
+    if target.mode == "sodium":
+        # 控钠模式：钠是硬约束，热量退居次要
+        score = (
+            sodium_over * 12.0  # 超钠重罚
+            + combo.total_sodium_density * 1.5  # 钠密度惩罚
+            + kcal_gap * 0.6  # 热量仍需接近但不主导
+            + protein_gap * 4.0
+        )
+        # 含高钠单品额外惩罚（即使总量达标，单份超1000mg也不理想）
+        if combo.has_sodium_bomb:
+            score += 60.0
 
-    # 蛋白缺口按每克 8 kcal 的等价代价计入
-    if combo.total_protein < target.protein:
-        protein_gap = target.protein - combo.total_protein
-        score += protein_gap * 8.0
+    elif target.mode == "density":
+        # 钠密度优先：直接按密度排序，找"低热量陷阱"之外的选择
+        score = (
+            combo.total_sodium_density * 3.0  # 密度主导
+            + kcal_gap * 0.5
+            + protein_gap * 3.0
+            + sodium_over * 8.0
+        )
 
-    # 钠超限重罚
-    if combo.total_sodium > target.sodium_limit:
-        score += (combo.total_sodium - target.sodium_limit) * 0.5
+    else:
+        # 默认热量模式
+        score = float(kcal_gap) * 1.0
+        if protein_gap:
+            score += protein_gap * 8.0
+        score += sodium_over * 0.5
 
     # 组合过于简单（只有主食）时轻微加罚，鼓励搭配完整
     if combo.side is None and combo.drink is None:
@@ -301,63 +420,135 @@ def find_combos(items: List[Item], target: Target, limit: int = 3) -> List[Combo
 def format_combo(combo: Combo, target: Target) -> str:
     """把套餐组合格式化为可读文本。"""
     lines = []
-    lines.append("=" * 52)
-    lines.append("推荐套餐")
-    lines.append("=" * 52)
+    lines.append("=" * 56)
+    lines.append("推荐套餐" + ("（控钠模式）" if target.mode == "sodium" else ""))
+    lines.append("=" * 56)
 
     for item in combo.items:
+        bomb_mark = "⚠" if item.is_sodium_bomb else " "
         lines.append(
-            f"  · {item.name:<12} {item.kcal:>4} kcal"
+            f" {bomb_mark}· {item.name:<13}{item.kcal:>4} kcal"
             f" | 蛋白 {item.protein:>2}g"
-            f" | 脂肪 {item.fat:>2}g"
-            f" | 碳水 {item.carb:>2}g"
+            f" | 钠 {item.sodium:>4}mg"
+            f" ({item.sodium_density:>5.1f}/100kcal)"
         )
 
-    lines.append("-" * 52)
+    lines.append("-" * 56)
     lines.append(
-        f"  合计       {combo.total_kcal:>4} kcal"
+        f"   合计{combo.total_kcal:>4} kcal"
         f" | 蛋白 {combo.total_protein:>2}g"
         f" | 脂肪 {combo.total_fat:>2}g"
         f" | 碳水 {combo.total_carb:>2}g"
     )
     lines.append(
-        f"  钠 {combo.total_sodium} mg"
+        f"   钠 {combo.total_sodium} mg（占上限 {round(combo.total_sodium / target.sodium_limit * 100)}%）"
         f" | 钙 {combo.total_calcium} mg"
+        f" | 钠密度 {combo.total_sodium_density} mg/100kcal"
     )
 
     # 与目标的差值
     kcal_gap = combo.total_kcal - target.kcal
     protein_gap = combo.total_protein - target.protein
+    sodium_gap = combo.total_sodium - target.sodium_limit
 
-    lines.append("-" * 52)
-    if abs(kcal_gap) <= target.tolerance:
-        lines.append(f"  热量：命中目标（偏差 {kcal_gap:+d} kcal，在 ±{target.tolerance} 容差内）")
-    elif kcal_gap > 0:
-        lines.append(f"  热量：超出 {kcal_gap} kcal")
-        lines.append(f"    调整建议：{_adjust_suggestion(combo, target, reduce=True)}")
+    lines.append("-" * 56)
+
+    # 钠评估（控钠模式下前置到热量之前）
+    if sodium_gap > 0:
+        lines.append(f" 钠：超出上限 {sodium_gap} mg")
+        lines.append(f"   调整建议：{_sodium_suggestion(combo, target)}")
     else:
-        deficit = -kcal_gap
-        lines.append(f"  热量：低于目标 {deficit} kcal")
-        lines.append(f"    调整建议：{_adjust_suggestion(combo, target, reduce=False)}")
+        lines.append(
+            f" 钠：{combo.total_sodium} mg，低于上限 {-sodium_gap} mg ✓"
+        )
+        # 控钠模式下，若最优解仍高于推荐值，说明麦当劳可选空间有限
+        if target.mode == "sodium" and combo.total_sodium > 1500:
+            lines.append(
+                "   注意：这是当前菜单下钠含量最低的可行组合之一。"
+                "麦当劳主食普遍高钠，若需严格低钠，建议减少外出就餐频次"
+            )
+
+    if combo.has_sodium_bomb:
+        bombs = [i.name for i in combo.items if i.is_sodium_bomb]
+        lines.append(
+            f"  ⚠ 高钠单品提醒：{'、'.join(bombs)}单份钠已超1000mg"
+            "（占成人建议上限 50% 以上）"
+        )
+
+    if abs(kcal_gap) <= target.tolerance:
+        lines.append(f" 热量：命中目标（偏差 {kcal_gap:+d} kcal）")
+    elif kcal_gap > 0:
+        lines.append(f" 热量：超出 {kcal_gap} kcal")
+        lines.append(f"   调整建议：{_adjust_suggestion(combo, target, reduce=True)}")
+    else:
+        lines.append(f" 热量：低于目标 {-kcal_gap} kcal")
+        lines.append(f"   调整建议：{_adjust_suggestion(combo, target, reduce=False)}")
 
     if target.protein <= 0:
-        lines.append(f"  蛋白：{combo.total_protein} g（未设目标，仅供参考）")
+        lines.append(f" 蛋白：{combo.total_protein} g（未设目标，仅供参考）")
     elif protein_gap >= 0:
-        lines.append(f"  蛋白：达标（超出 {protein_gap}g）")
+        lines.append(f" 蛋白：达标（超出 {protein_gap}g）")
     else:
-        lines.append(f"  蛋白：差 {-protein_gap}g")
-        lines.append("    调整建议：可把主食换成双层吉士汉堡（蛋白 27g）或加一份麦乐鸡")
+        lines.append(f" 蛋白：差 {-protein_gap}g")
+        lines.append("   调整建议：可把主食换成双层吉士汉堡（蛋白 27g）或加一份麦乐鸡")
 
-    if combo.total_sodium > target.sodium_limit:
+    lines.append("=" * 56)
+    return "\n".join(lines)
+
+
+def _sodium_suggestion(combo: Combo, target: Target) -> str:
+    """生成降钠建议。"""
+    over = combo.total_sodium - target.sodium_limit
+
+    # 优先替换高钠单品
+    swaps = []
+    for item in combo.items:
+        if item.is_sodium_bomb:
+            swaps.append((item.name, item.sodium))
+    if swaps:
+        name, na = max(swaps, key=lambda x: x[1])
+        return f"去掉「{name}」（钠 {na}mg），可减 {na}mg"
+
+    # 找同类低钠替代品
+    for item in combo.items:
+        if item.kcal >= 100 and item.sodium < 100:
+            continue  # 已经是低钠
+        if item.category in ("drink", "coffee"):
+            continue  # 饮品不是主要钠来源
+
+    # 提示饮品替换
+    if combo.drink and combo.drink.sodium > 50:
+        return f"把「{combo.drink.name}」换成无糖可乐（钠 35mg）或纯牛奶（钠 73mg）"
+
+    return f"当前麦当劳可选单品中，低钠主食（钠<150mg）仅有饮品和甜品，{over}mg 缺口需通过减少高钠单品或降低钠上限解决"
+
+
+def format_sodium_report(items: List[Item], target: Target) -> str:
+    """生成控钠模式专属的高钠陷阱报告。"""
+    lines = []
+    lines.append("=" * 56)
+    lines.append("高钠陷阱预警（钠密度 TOP 8）")
+    lines.append("=" * 56)
+    lines.append("钠密度 = 每 100 千卡含钠毫克数。密度高= 少量热量就吃掉大量钠。")
+    lines.append("")
+
+    ranked = sorted(
+        [i for i in items if i.kcal > 0], key=lambda x: x.sodium_density, reverse=True
+    )[:8]
+
+    for item in ranked:
+        flag = "⚠" if item.is_sodium_bomb else " "
+        pct = round(item.sodium / target.sodium_limit * 100)
         lines.append(
-            f"  钠：{combo.total_sodium} mg，超出建议上限 {target.sodium_limit} mg"
-            "，建议搭配无糖可乐或清水"
+            f" {flag} {item.name:<16}{item.sodium:>5}mg /{item.kcal:>4}kcal"
+            f"  = {item.sodium_density:>5.1f} mg/100kcal（占上限 {pct}%）"
         )
-    else:
-        lines.append(
-            f"  钠：{combo.total_sodium} mg"
-            f"（占建议上限 {round(combo.total_sodium / target.sodium_limit * 100)}%）"
-        )
+
+    lines.append("")
+    lines.append("关键结论：低热量 ≠ 低钠。")
+    lines.append("上方多数品项热量不高，但钠密度远超常见认知。")
+    lines.append("=" * 56)
+    return "\n".join(lines)
 
     lines.append("=" * 52)
     return "\n".join(lines)
@@ -405,12 +596,44 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="麦麦营养配餐计算引擎 —— 基于麦当劳 MCP 真实营养数据"
+        description="麦麦营养配餐计算引擎 —— 基于麦当劳 MCP 真实营养数据",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""示例：
+  # 热量模式（默认）
+  python planner.py --kcal 800 --protein 30
+
+  # 控钠模式（差异化核心）
+  python planner.py --kcal 800 --sodium-limit 1200 --sodium-focus
+
+  # 钠密度模式（避开高钠陷阱）
+  python planner.py --kcal 800 --density-focus
+
+  # 查看高钠陷阱报告
+  python planner.py --kcal 800 --sodium-report
+""",
     )
     parser.add_argument("--kcal", type=int, required=True, help="热量目标（千卡）")
     parser.add_argument("--protein", type=int, default=0, help="蛋白目标（克）")
     parser.add_argument(
-        "--sodium-limit", type=int, default=2000, help="钠摄入上限（毫克），默认 2000"
+        "--sodium-limit",
+        type=int,
+        default=2000,
+        help="钠摄入上限（毫克），默认 2000",
+    )
+    parser.add_argument(
+        "--sodium-focus",
+        action="store_true",
+        help="控钠模式：优先低钠组合（超钠重罚）",
+    )
+    parser.add_argument(
+        "--density-focus",
+        action="store_true",
+        help="钠密度模式：按 mg/100kcal 排序，避开高钠陷阱",
+    )
+    parser.add_argument(
+        "--sodium-report",
+        action="store_true",
+        help="输出高钠陷阱预警报告（钠密度 TOP 8）",
     )
     parser.add_argument(
         "--allow-dessert", action="store_true", help="允许包含甜品"
@@ -426,13 +649,29 @@ def main() -> None:
     args = parser.parse_args()
 
     items = load_items()
+
+    # 确定规划模式
+    mode = "heat"
+    if args.sodium_focus:
+        mode = "sodium"
+    elif args.density_focus:
+        mode = "density"
+
     target = Target(
         kcal=args.kcal,
         protein=args.protein,
         sodium_limit=args.sodium_limit,
         allow_dessert=args.allow_dessert,
         exclude_categories=args.exclude,
+        mode=mode,
     )
+
+    # 仅输出高钠报告
+    if args.sodium_report:
+        print()
+        print(format_sodium_report(items, target))
+        print()
+        return
 
     try:
         combos = find_combos(items, target, limit=args.limit)
@@ -448,6 +687,7 @@ def main() -> None:
                         "kcal": target.kcal,
                         "protein": target.protein,
                         "sodium_limit": target.sodium_limit,
+                        "mode": target.mode,
                     },
                     "combos": [c.to_dict() for c in combos],
                 },
@@ -457,9 +697,18 @@ def main() -> None:
         )
         return
 
+    mode_cn = {"heat": "热量模式", "sodium": "控钠模式", "density": "钠密度模式"}
     print()
+    print(f"模式：{mode_cn[mode]}")
     print(f"目标：{target.kcal} kcal" + (f" / 蛋白 {target.protein}g" if target.protein else ""))
+    print(f"钠上限：{target.sodium_limit} mg")
     print(f"数据源：MCP list-nutrition-foods（共 {len(items)} 条餐品，本地快照）")
+
+    if mode == "sodium":
+        print()
+        print(format_sodium_report(items, target))
+        print()
+
     print()
 
     for idx, combo in enumerate(combos, 1):
