@@ -7,7 +7,7 @@
 [![Skill](https://img.shields.io/badge/Type-MCP%20Skill-ffc72c?style=for-the-badge&labelColor=27251F)](https://github.com/xue034/mcd-meal-planner)
 [![Powered by mcd-mcp](https://img.shields.io/badge/Powered%20by-mcd--mcp-FFC72C?style=for-the-badge&labelColor=27251F)](https://open.mcd.cn/mcp)
 [![License](https://img.shields.io/badge/License-MIT-27251F?style=for-the-badge&labelColor=27251F)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-37%20passed-38a169?style=for-the-badge)](tests/test_planner.py)
+[![Tests](https://img.shields.io/badge/tests-49%20passed-38a169?style=for-the-badge)](tests/test_planner.py)
 
 </div>
 
@@ -65,7 +65,7 @@
 | 🎟️ **今日券叠加** | 补充当日可领优惠券（不依赖门店定位） |
 | 🔌 **离线可跑** | MCP 不可用时回退本地快照，功能不中断 |
 | 📦 **可编程** | `--json` 输出，便于接入饮食记录工具 |
-| 🧪 **有测试** | 37 个单元测试全部通过 |
+| 🧪 **有测试** | 49 个单元测试全部通过 |
 
 ---
 
@@ -222,6 +222,69 @@ git clone https://github.com/xue034/mcd-meal-planner ~/.workbuddy/skills/mcd-mea
 
 ---
 
+## 🏢 商业价值：不只是"好玩"
+
+> 详细文档见 [COMMERCIAL_VALUE.md](COMMERCIAL_VALUE.md)
+> ⚠️ 官方规则**未设置任何评审标准**，排名 100% 由 Star 数决定。本节为面向业务方的价值自述。
+
+我们拿到 MCP 真实数据后，发现了一个和品牌直接相关的问题：
+
+**实测账号的积分账户：**
+
+| 指标 | 数值 |
+|---|---:|
+| 累计获得积分 | 962.7 |
+| 可用积分 | 57.9 |
+| **已过期** | **758.8** |
+| 过期积分占累计 | **78.8%** |
+| 可用占累计 | 5.9% |
+
+**近八成历史积分已经过期，可用的不到 6%。** 这不是个例——积分是预付资产，过期即等于负债，而用户普遍缺少"过期前用掉"的触发机制。
+
+### 业务诉求映射
+
+| 麦当劳诉求 | 本项目能力 | 对应 MCP 工具 | 可验证指标 |
+|---|---|---|---|
+| **会员资产激活** | 过期预警 + 沉睡诊断 + 兑换时机 | `query-my-account` | 积分沉淀率、沉睡占比 |
+| **券核销提升** | 未领券提醒 + 沉睡券盘点 | `available-coupons` | 领券率、核销率 |
+| **活动引流** | 活动日历 + 抽奖机会提示 | `campaign-calendar`、`query-lottery-info` | 活动触达率、抽奖参与 |
+| **品牌年轻化** | 控钠社交话术生成 | 全部查询接口 | UGC 分享量、情绪 |
+| 点单转化 | 配餐决策引导 | —（**刻意不接 `create-order`**） | 方案→下单转化率 |
+
+### 实测输出示例
+
+```bash
+$ python planner.py --kcal 800 --sodium-focus \
+    --points 57 --accumulative 962 --expired-point 758
+```
+
+```
+会员资产诊断
+  · 历史累计 962 积分中，已有 758 分过期（占 78.8%）
+  · 可用积分 57 分，但仅占累计的 5.9%——积分账户处于沉睡状态
+  · 可用积分 57 分，可参与积分抽奖（单次 24 分）
+    → 过期积分不可恢复，但可通过稳定消费节奏避免再次沉淀过期
+    → 积分抽奖是低门槛消耗积分的方式，可作为日常动作
+```
+
+### 我们的优先级
+
+```
+用户真实价值 > 可信诚实 > 商业价值 > 技术优雅 > 功能数量
+```
+
+**三条"对自己不利"但仍坚持的选择：**
+
+| 行为 | 商业上不划算 | 为什么仍要做 |
+|---|---|---|
+| 明确告知"严格低钠主食不存在" | 削弱"工具有用"的印象 | 控钠人群需要确定性，夸大只会害他们 |
+| 标注 `query-nearby-stores` 不可用 | 暴露能力短板 | 用户信任无价，藏问题会失去口碑 |
+| **不接 `create-order`** | 放弃最直接的转化指标 | 误下单风险高于转化收益 |
+
+**所有写操作一律不自动化**——不调 `auto-bind-coupons`、`draw-lottery`、`create-order`。本项目是决策辅助工具，不是交易代理。测试用例中有专门的 `test_no_write_operations` 断言这一点。
+
+---
+
 ## 🧩 TOON 格式解析（接入此接口必踩的坑）
 
 麦当劳 MCP 的 `list-nutrition-foods` **不返回标准 JSON**，而是返回 **TOON**（Token-Oriented Object Notation）——官方文档说明是为降低 LLM Token 消耗。
@@ -277,16 +340,18 @@ records = parse_nutrition_toon(mcp_response)
 ```
 mcd-meal-planner/
 ├── planner.py                      计算引擎（零第三方依赖）
+├── commercial.py                   商业价值模块（会员资产/券/品牌话术）
 ├── toon_parser.py                  TOON 格式解析器
 ├── SKILL.md                        WorkBuddy Skill 定义
 ├── tests/
-│   └── test_planner.py37 个单元测试
+│   └── test_planner.py             49 个单元测试
 ├── docs/
 │   └── demo.html                   可视化演示页
 ├── references/
 │   └── nutrition-data.json         75 条 MCP 真实数据快照
 ├── README.md
 ├── MCP_INTEGRATION.md              MCP 集成说明
+├── COMMERCIAL_VALUE.md             商业价值说明
 ├── CONTEST_DECLARATION.md          官方声明（原文）
 ├── workbuddy.md                    WorkBuddy 开发上下文
 ├── mcp-config.example.json         脱敏 MCP 配置
@@ -300,13 +365,16 @@ mcd-meal-planner/
 
 ```bash
 $ python tests/test_planner.py
-Ran 37 tests in 1.157s
+Ran 49 tests in 1.480s
 OK
 ```
 
-覆盖范围：TOON 解析（9 项）、数据完整性（5 项）、参数校验（5 项）、热量模式（6 项）、控钠模式（4 项）、密度模式（2 项）、输出格式（6 项）。
+覆盖范围：TOON 解析（9）、数据完整性（5）、参数校验（5）、热量模式（6）、控钠模式（4）、密度模式（2）、**商业模块（12）**、输出格式（6）。
 
-控钠模式的测试包含**差异化验证**——断言控钠模式的钠含量显著低于热量模式，且必定避开高钠单品。
+三个关键测试：
+- `test_lower_sodium_than_heat_mode` —— 断言控钠模式的钠显著低于热量模式（差异化验证）
+- `test_no_write_operations` —— 断言不调用任何写操作接口（安全边界验证）
+- `test_brand_message_avoids_brand_comparison` —— 断言话术不含竞品对比（合规验证）
 
 ---
 

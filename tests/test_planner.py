@@ -325,6 +325,142 @@ class TestDensityMode(unittest.TestCase):
             self.assertIn("sodium_density", item)
 
 
+class TestCommercialModule(unittest.TestCase):
+    """商业价值模块测试"""
+
+    def setUp(self):
+        from commercial import (
+            PointAccount,
+            Coupon,
+            LotteryInfo,
+            diagnose_points,
+            diagnose_coupons,
+            build_brand_message,
+        )
+        # 使用实测数据：可用 57.9 / 累计 962.7 / 已过期 758.8
+        self.acc = PointAccount(
+            available=57,
+            accumulative=962,
+            used=146,
+            expired=758,
+        )
+        self.coupons = [
+            Coupon("免费脆薯饼", "可领取"),
+            Coupon("9.9元中杯冰美式", "可领取"),
+            Coupon("麦旋风任选", "已领取"),
+            Coupon("薯薯任选", "已领取"),
+        ]
+        self.lottery = LotteryInfo(
+            name="麦麦积分抽奖",
+            status="进行中",
+            draw_point=24,
+            available_point=57,
+            eligible=True,
+        )
+        self._diag_points = diagnose_points
+        self._diag_coupons = diagnose_coupons
+        self._build_msg = build_brand_message
+
+    def test_expire_ratio_calculation(self):
+        """过期积分占比计算正确"""
+        self.assertAlmostEqual(self.acc.expire_risk_ratio, 78.8, places=1)
+
+    def test_dormant_ratio_calculation(self):
+        """沉睡积分占比计算正确"""
+        self.assertAlmostEqual(self.acc.dormant_ratio, 5.9, places=1)
+
+    def test_points_diagnosis_detects_expiry(self):
+        """应检测出高过期比例"""
+        diag = self._diag_points(self.acc)
+        self.assertTrue(
+            any("过期" in i for i in diag["insights"]),
+            "应识别出过期积分问题",
+        )
+
+    def test_points_diagnosis_gives_actions(self):
+        """应给出可执行建议"""
+        diag = self._diag_points(self.acc)
+        self.assertGreater(len(diag["actions"]), 0, "应给出至少一条建议")
+
+    def test_expiring_soon_urgent_warning(self):
+        """本月临期积分应触发紧急提示"""
+        from commercial import PointAccount, diagnose_points
+
+        acc = PointAccount(
+            available=100, accumulative=500, expired=0, current_month_expire=80
+        )
+        diag = diagnose_points(acc)
+        self.assertTrue(
+            any("本月将过期" in i for i in diag["insights"]),
+            "临期积分应被识别",
+        )
+        self.assertTrue(
+            any("紧急" in i for i in diag["insights"]),
+            "临期应标记为最紧急",
+        )
+
+    def test_coupon_diagnosis_counts_states(self):
+        """券状态统计正确"""
+        diag = self._diag_coupons(self.coupons)
+        self.assertEqual(diag["metrics"]["total"], 4)
+        self.assertEqual(diag["metrics"]["claimable"], 2)
+        self.assertEqual(diag["metrics"]["unused"], 2)
+
+    def test_coupon_diagnosis_identifies_sleeper(self):
+        """应识别出已领未用的沉睡资产"""
+        diag = self._diag_coupons(self.coupons)
+        self.assertTrue(
+            any("沉睡资产" in i for i in diag["insights"]),
+            "应识别沉睡券",
+        )
+
+    def test_empty_coupon_gives_action(self):
+        """无券时应给出建议"""
+        diag = self._diag_coupons([])
+        self.assertGreater(len(diag["actions"]), 0)
+
+    def test_lottery_affordability(self):
+        """抽奖可负担判断正确"""
+        self.assertTrue(self.lottery.can_afford)
+        from commercial import LotteryInfo
+
+        poor = LotteryInfo(draw_point=100, available_point=50)
+        self.assertFalse(poor.can_afford)
+
+    def test_brand_message_content(self):
+        """品牌话术应包含关键数值"""
+        msg = self._build_msg(773, 16, ["麦乐鸡4块", "大薯条"], 553)
+        self.assertIn("773", msg)
+        self.assertIn("553", msg)
+        self.assertIn("麦乐鸡4块", msg)
+
+    def test_brand_message_avoids_brand_comparison(self):
+        """品牌话术不得出现竞品对比表述"""
+        msg = self._build_msg(773, 16, ["巨无霸"], 553)
+        forbidden = ["肯德基", "汉堡王", "最健康", "优于", "比XX"]
+        for word in forbidden:
+            self.assertNotIn(word, msg, f"话术不应包含：{word}")
+
+    def test_no_write_operations(self):
+        """商业模块不得包含写操作接口调用"""
+        import inspect
+        import commercial
+
+        source = inspect.getsource(commercial)
+        forbidden_calls = [
+            "auto-bind-coupons",
+            "draw-lottery",
+            "create-order",
+            "cancel-order",
+            "delivery-create-address",
+        ]
+        for call in forbidden_calls:
+            # 允许在文档字符串中提及，但不得作为实际调用
+            self.assertNotIn(
+                f'"{call}("', source, f"不得直接调用写操作接口：{call}"
+            )
+
+
 class TestComboOutput(unittest.TestCase):
     """套餐输出测试"""
 

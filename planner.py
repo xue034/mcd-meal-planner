@@ -38,6 +38,12 @@ from typing import List, Optional, Dict, Any
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from toon_parser import parse_nutrition_toon  # noqa: E402
+from commercial import (  # noqa: E402
+    PointAccount,
+    diagnose_points,
+    diagnose_coupons,
+    build_brand_message,
+)
 
 # ---------------------------------------------------------------------------
 # 数据加载
@@ -643,6 +649,22 @@ def main() -> None:
     )
     parser.add_argument("--limit", type=int, default=3, help="返回方案数量")
     parser.add_argument(
+        "--points",
+        type=int,
+        default=0,
+        help="用户当前可用积分（非0 时输出会员资产诊断），"
+        "配合 --accumulative/--expired-point 传入完整账户数据",
+    )
+    parser.add_argument(
+        "--accumulative", type=int, default=0, help="累计获得积分"
+    )
+    parser.add_argument("--expired-point", type=int, default=0, help="已过期积分")
+    parser.add_argument(
+        "--brand-message",
+        action="store_true",
+        help="生成分享话术（品牌年轻化场景）",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="以JSON 格式输出，便于程序化调用"
     )
 
@@ -716,6 +738,41 @@ def main() -> None:
             print()
         print(f"【方案 {idx}】")
         print(format_combo(combo, target))
+
+    # 会员资产诊断（商业价值：存量资产盘活）
+    if args.points > 0:
+        acc = PointAccount(
+            available=args.points,
+            accumulative=args.accumulative or args.points,
+            expired=args.expired_point,
+        )
+        diag = diagnose_points(acc)
+        print()
+        print("=" * 56)
+        print("会员资产诊断")
+        print("=" * 56)
+        for insight in diag["insights"]:
+            print(f"  · {insight}")
+        for action in diag["actions"]:
+            print(f"    → {action}")
+
+    # 品牌话术（商业价值：品牌年轻化）
+    if args.brand_message:
+        best = combos[0]
+        print()
+        print("=" * 56)
+        print("分享话术（可复制到社交平台）")
+        print("=" * 56)
+        print(
+            build_brand_message(
+                kcal=best.total_kcal,
+                protein=best.total_protein,
+                combo_items=[i.name for i in best.items],
+                sodium=best.total_sodium,
+            )
+        )
+        print("=" * 56)
+        print("提示：话术仅陈述个人选择，不做品牌对比，不夸大健康效果。")
 
     print()
     print("提示：本工具输出仅供参考，不构成医疗或营养专业建议。")

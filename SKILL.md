@@ -121,7 +121,7 @@ python planner.py --kcal 800 --sodium-report
 | `planner.py` 控钠模式 | 800kcal/1200mg 上限 → 钠 553mg，避开所有高钠单品 |
 | `planner.py` 密度模式 | 钠密度 71.5 mg/100kcal，显著低于热量模式 |
 | `toon_parser.py` | 往返转换一致、空值/空行/字段缺失/异常输入均正确处理 |
-| `tests/test_planner.py` | 37 个单元测试全部通过 |
+| `tests/test_planner.py` | 49 个单元测试全部通过 |
 
 ## 失败回退 (Failure Fallback)
 
