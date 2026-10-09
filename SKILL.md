@@ -16,6 +16,7 @@ license: MIT
 | 热量模式 | 输入热量/蛋白目标，输出精确到克的组合与差值 |
 | **控钠模式** | `--sodium-focus`，优先低钠组合，超钠重罚 |
 | **钠密度排序** | `--density-focus`，按 mg/100kcal 排序，避开高钠陷阱 |
+| **酱料减钠** | `--sauce`，优先支持去酱的餐品，输出去酱减钠估算区间（全场唯一） |
 | **高钠预警** | 单份钠≥1000mg 的「钠炸弹」自动标记 |
 | 调整建议 | 没命中目标时给出"换哪个单品能省多少 kcal / 多少钠" |
 | 今日券叠加 | 补充当日可领优惠券（**不依赖门店定位**） |
@@ -40,6 +41,7 @@ license: MIT
 | 提到钠/血压/肾/孕妇/老人 | `sodium` | **控钠优先，钠是硬约束** |
 | 提到"健康""干净""清爽" | `density` | 钠密度排序 |
 | 明确要两个维度 | `sodium` | 控钠优先，同时看热量 |
+| 提到少盐/少吃酱/清淡/高血压控钠操作 | `sauce` | 酱料减钠：给出"去XX酱"的可执行操作 |
 
 **若用户没给具体数字**，主动追问，不要瞎猜：
 > 「你今天想控制在多少大卡？要不要同时控制钠？有没有蛋白目标？」
@@ -56,6 +58,9 @@ python planner.py --kcal 800 --sodium-limit 1200 --sodium-focus
 # 钠密度模式（避开高钠陷阱）
 python planner.py --kcal 800 --density-focus
 
+# 酱料减钠模式（全场唯一）
+python planner.py --kcal 800 --sauce
+
 # 高钠陷阱预警报告
 python planner.py --kcal 800 --sodium-report
 ```
@@ -69,6 +74,7 @@ python planner.py --kcal 800 --sodium-report
 | `--sodium-limit` | 钠上限，默认 2000 |
 | `--sodium-focus` | 控钠模式 |
 | `--density-focus` | 钠密度模式 |
+| `--sauce` | 酱料减钠模式 |
 | `--sodium-report` | 输出高钠陷阱报告 |
 | `--allow-dessert` | 允许甜品 |
 | `--exclude` | 排除品类，如 `burger dessert` |
@@ -125,6 +131,8 @@ python planner.py --kcal 800 --sodium-report
 | `campaign-calendar` | 正常返回当月活动，含未来日期 |
 | `planner.py` 热量模式 | 四组场景实测热量偏差均为 0 |
 | `planner.py` 控钠模式 | 800kcal/1200mg 上限 → 钠 553mg，避开所有高钠单品 |
+| `planner.py --sauce` | 800kcal → 板烧鸡腿堡组合钠 1161mg，去烤味酱后估算 811–1011mg |
+| `sauce.py` 可去酱清单 | 来自 query-meal-detail 实测 modification 字段（板烧/麦辣） |
 | `planner.py` 密度模式 | 钠密度 71.5 mg/100kcal，显著低于热量模式 |
 | `toon_parser.py` | 往返转换一致、空值/空行/字段缺失/异常输入均正确处理 |
 | `tests/test_planner.py` | 68 个单元测试全部通过 |

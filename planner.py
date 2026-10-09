@@ -332,12 +332,17 @@ def _score(combo: Combo, target: Target) -> float:
         1. 钠密度（权重最高，直接按密度排序）
         2. 热量偏离
         3. 蛋白
+
+    sauce（--sauce）—— 酱料减钠
+        以控钠逻辑为基础，但同等条件下优先推荐**实测支持去酱**的餐品
+        （来自 query-meal-detail 的 modification 字段），因为去酱是
+        用户唯一能主动执行的减钠操作。输出附带"去酱后估算区间"。
     """
     kcal_gap = abs(combo.total_kcal - target.kcal)
     sodium_over = max(0, combo.total_sodium - target.sodium_limit)
     protein_gap = max(0, target.protein - combo.total_protein)
 
-    if target.mode == "sodium":
+    if target.mode in ("sodium", "sauce"):
         # 控钠模式：钠是硬约束，热量退居次要
         score = (
             sodium_over * 12.0  # 超钠重罚
@@ -348,6 +353,14 @@ def _score(combo: Combo, target: Target) -> float:
         # 含高钠单品额外惩罚（即使总量达标，单份超1000mg也不理想）
         if combo.has_sodium_bomb:
             score += 60.0
+
+        # sauce 模式专属：同等条件下优先支持去酱的餐品（小权重，
+        # 只影响打分不影响硬指标；估算值不进入打分，只用于展示）
+        if target.mode == "sauce":
+            from sauce import list_modifiable_in
+
+            if list_modifiable_in([i.name for i in combo.items]):
+                score -= 25.0  # 可去酱组合的先验奖励
 
     elif target.mode == "density":
         # 钠密度优先：直接按密度排序，找"低热量陷阱"之外的选择
@@ -427,7 +440,11 @@ def format_combo(combo: Combo, target: Target) -> str:
     """把套餐组合格式化为可读文本。"""
     lines = []
     lines.append("=" * 56)
-    lines.append("推荐套餐" + ("（控钠模式）" if target.mode == "sodium" else ""))
+    lines.append(
+        "推荐套餐"
+        + ("（控钠模式）" if target.mode == "sodium" else "")
+        + ("（酱料减钠模式）" if target.mode == "sauce" else "")
+    )
     lines.append("=" * 56)
 
     for item in combo.items:
@@ -497,6 +514,16 @@ def format_combo(combo: Combo, target: Target) -> str:
     else:
         lines.append(f" 蛋白：差 {-protein_gap}g")
         lines.append("   调整建议：可把主食换成双层吉士汉堡（蛋白 27g）或加一份麦乐鸡")
+
+    # sauce 模式：追加"去酱减钠"方案（无可去酱餐品时不输出，不硬凑）
+    if target.mode == "sauce":
+        from sauce import format_sauce_report
+
+        lines.append(
+            format_sauce_report(
+                [i.name for i in combo.items], combo.total_sodium
+            )
+        )
 
     lines.append("=" * 56)
     return "\n".join(lines)
@@ -642,6 +669,12 @@ def main() -> None:
         help="输出高钠陷阱预警报告（钠密度 TOP 8）",
     )
     parser.add_argument(
+        "--sauce",
+        action="store_true",
+        help="酱料减钠模式：优先支持去酱的餐品，输出去酱后减钠估算区间"
+        "（基于 query-meal-detail modification 字段的实测清单）",
+    )
+    parser.add_argument(
         "--allow-dessert", action="store_true", help="允许包含甜品"
     )
     parser.add_argument(
@@ -678,6 +711,8 @@ def main() -> None:
         mode = "sodium"
     elif args.density_focus:
         mode = "density"
+    elif args.sauce:
+        mode = "sauce"
 
     target = Target(
         kcal=args.kcal,
@@ -719,7 +754,12 @@ def main() -> None:
         )
         return
 
-    mode_cn = {"heat": "热量模式", "sodium": "控钠模式", "density": "钠密度模式"}
+    mode_cn = {
+        "heat": "热量模式",
+        "sodium": "控钠模式",
+        "density": "钠密度模式",
+        "sauce": "酱料减钠模式",
+    }
     print()
     print(f"模式：{mode_cn[mode]}")
     print(f"目标：{target.kcal} kcal" + (f" / 蛋白 {target.protein}g" if target.protein else ""))
@@ -738,6 +778,32 @@ def main() -> None:
             print()
         print(f"【方案 {idx}】")
         print(format_combo(combo, target))
+
+    # sauce 模式：若 Top-N 中没有任何可去酱餐品，补一个"去酱优选方案"
+    # ——把主食限定为实测支持去酱的餐品重新求解，保证用户拿到可执行的
+    # 减钠操作。找不到可行解时静默跳过，不硬凑。
+    if mode == "sauce":
+        from sauce import MODIFIABLE_ITEMS, list_modifiable_in
+
+        has_modifiable = any(
+            list_modifiable_in([i.name for i in c.items]) for c in combos
+        )
+        if not has_modifiable:
+            mod_names = tuple(MODIFIABLE_ITEMS)
+            sauce_items = [
+                i
+                for i in items
+                if i.category not in _MAIN_CATEGORIES
+                or any(m in i.name for m in mod_names)
+            ]
+            try:
+                sauce_combos = find_combos(sauce_items, target, limit=1)
+            except ValueError:
+                sauce_combos = []
+            if sauce_combos:
+                print()
+                print("【去酱优选方案】（主食限定为实测支持去酱的餐品）")
+                print(format_combo(sauce_combos[0], target))
 
     # 会员资产诊断（商业价值：存量资产盘活）
     if args.points > 0:

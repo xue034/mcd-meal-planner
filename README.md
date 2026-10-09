@@ -7,7 +7,7 @@
 [![Skill](https://img.shields.io/badge/Type-MCP%20Skill-ffc72c?style=for-the-badge&labelColor=27251F)](https://github.com/xue034/mcd-meal-planner)
 [![Powered by mcd-mcp](https://img.shields.io/badge/Powered%20by-mcd--mcp-FFC72C?style=for-the-badge&labelColor=27251F)](https://open.mcd.cn/mcp)
 [![License](https://img.shields.io/badge/License-MIT-27251F?style=for-the-badge&labelColor=27251F)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-68%20passed-38a169?style=for-the-badge)](tests/test_planner.py)
+[![Tests](https://img.shields.io/badge/tests-76%20passed-38a169?style=for-the-badge)](tests/test_planner.py)
 
 </div>
 
@@ -66,7 +66,7 @@
 | 🏪 **可买性校验** | 对照门店实时菜单过滤买不到的品项，显示真实价格与门店券 |
 | 🔌 **离线可跑** | MCP 不可用时回退本地快照，功能不中断 |
 | 📦 **可编程** | `--json` 输出，便于接入饮食记录工具 |
-| 🧪 **有测试** | 68 个单元测试全部通过 |
+| 🧪 **有测试** | 76 个单元测试全部通过 |
 
 ---
 
@@ -115,6 +115,9 @@ python planner.py --kcal 800 --protein 30
 
 # 钠密度模式（避开高钠陷阱）
 python planner.py --kcal 800 --density-focus
+
+# 酱料减钠模式（第四模式：优先支持去酱的餐品，输出去酱减钠区间）
+python planner.py --kcal 800 --sauce
 
 # 高钠陷阱预警报告
 python planner.py --kcal 800 --sodium-report
@@ -286,6 +289,46 @@ $ python planner.py --kcal 800 --sodium-focus \
 
 ---
 
+## 🥫 酱料减钠模式（第四模式 · 全场唯一）
+
+**认知反转 #2：控制钠的关键，不止是选对食物，还有去掉那勺酱。**
+
+麦当劳 MCP 的 `query-meal-detail` 接口会返回餐品的 `modification` 字段——标明该餐品支持哪些"去料"操作。实测确认：
+
+| 餐品 | 整品钠 | 可去酱料 |
+|---|---:|---|
+| 板烧鸡腿堡 | 1041 mg | 烤味酱 |
+| 麦辣鸡腿汉堡 | 1208 mg | 麦香鸡酱 |
+
+**酱料是汉堡钠的主要载体之一**，而"去酱"是用户在下单页面唯一能主动执行的减钠操作。但全场 45 个参赛项目中，没有任何一个使用这个字段。
+
+```bash
+$ python planner.py --kcal 800 --sauce
+【去酱优选方案】（主食限定为实测支持去酱的餐品）
+  ⚠· 板烧鸡腿堡    391 kcal | 蛋白 23g | 钠 1041mg (266.2/100kcal)
+  · 小薯条         210 kcal | 蛋白  3g | 钠  120mg ( 57.1/100kcal)
+  · 可乐大杯       224 kcal | 蛋白  0g | 钠    0mg (  0.0/100kcal)
+   合计 825 kcal | 钠 1161 mg（占上限 58%）
+--------------------------------------------------------
+ 去酱减钠方案（sauce 模式）
+--------------------------------------------------------
+  · 板烧鸡腿堡 去烤味酱 → 预计减钠 150–350 mg（估算）
+  当前组合钠 1161 mg → 去酱后约 811–1011 mg（估算区间）
+  数据说明：减钠量为基于常见酱料营养数据的估算区间，非麦当劳官方数值；
+  官方文档仅明确「去沙拉酱立减 60 kcal」。
+```
+
+### 关于估算值的诚实声明
+
+**MCP 不提供酱料单独的钠含量。** 本模块输出的减钠量是基于公开营养成分
+数据库中常见汉堡酱料的**估算区间**（150–350 mg/份），不是麦当劳官方数值。
+所有输出都携带"估算"标注，且：
+
+- 只对**实测确认支持去酱**的餐品给建议（`query-meal-detail` 真实返回），
+  未实测的餐品一律返回空，不硬凑
+- 蔬菜类去料（生菜等）不计入减钠（钠含量可忽略）
+- 测试中有专项断言：输出必须包含"估算"与"非麦当劳官方"字样
+
 ## 🧩 TOON 格式解析（接入此接口必踩的坑）
 
 麦当劳 MCP 的 `list-nutrition-foods` **不返回标准 JSON**，而是返回 **TOON**（Token-Oriented Object Notation）——官方文档说明是为降低 LLM Token 消耗。
@@ -344,9 +387,10 @@ mcd-meal-planner/
 ├── commercial.py                   商业价值模块（会员资产/券/品牌话术）
 ├── toon_parser.py                  TOON 格式解析器
 ├── store.py                       门店定位/实时菜单/可买性校验
+├── sauce.py                       酱料减钠模块（第四模式）
 ├── SKILL.md                        WorkBuddy Skill 定义
 ├── tests/
-│   └── test_planner.py             68 个单元测试
+│   └── test_planner.py             76 个单元测试
 ├── docs/
 │   └── demo.html                   可视化演示页
 ├── references/

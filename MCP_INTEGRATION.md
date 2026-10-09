@@ -22,7 +22,7 @@
 
 ## 二、实际调用的 Tool
 
-本项目**实际使用**以下 6 个麦当劳 MCP Tool（营养 3 个 + 门店 3 个）：
+本项目**实际使用**以下 7 个麦当劳 MCP Tool（营养 3 个 + 门店 3 个 + 详情 1 个）：
 
 | # | Tool | 作用 | 章节 |
 |---|---|---|---|
@@ -32,6 +32,7 @@
 | 4 | `query-nearby-stores` | 门店定位 | 3.1 |
 | 5 | `query-meals` | 门店实时菜单与价格 | 3.2 |
 | 6 | `query-store-coupons` | 门店可用券 | 3.3 |
+| 7 | `query-meal-detail` | 餐品详情与可去酱料（modification） | 3.4 |
 
 以下逐一说明。
 
@@ -222,6 +223,39 @@
 | `delivery-query-addresses` | 读（隐私） | ❌ 不调用，无需配送场景 |
 
 **原则**：本项目是决策辅助工具，不是交易代理。测试用例 `test_no_write_operations` 断言源码中不含任何写操作调用。
+
+---
+
+### 3.4 `query-meal-detail` — 餐品详情与可去酱料（sauce 模式数据源）
+
+| 项目 | 内容 |
+|---|---|
+| 用途 | 查询单个餐品详情，含 `modification`（可去配料）字段 |
+| 入参 | `beType=1`、`code`（餐品编码）、`orderType=1`、`storeCode` |
+| 关键返回 | `modification.values[].name`（如"烤味酱"）、`supportModify` |
+
+**实测返回片段**（2026-10-09，板烧鸡腿堡 code=1406）：
+
+```json
+{
+  "supportModify": true,
+  "modification": {
+    "values": [
+      {"name": "烤味酱",  "selectedKey": "0-1", "unselectedKey": "0-0"},
+      {"name": "切块生菜", "selectedKey": "0-1", "unselectedKey": "0-0"}
+    ]
+  }
+}
+```
+
+**本项目对该字段的使用（sauce 模式，全场唯一）**：
+
+1. 只对实测返回 `supportModify=true` 的餐品生成"去酱减钠"建议
+2. `sauce.py` 维护实测确认的可去酱清单（板烧鸡腿堡→烤味酱；麦辣鸡腿汉堡→麦香鸡酱）
+3. **诚实边界**：MCP 不返回酱料单独的钠含量，减钠量以"估算区间"呈现
+   （150–350 mg/份，依据公开酱料营养数据），输出强制携带"非麦当劳官方"
+   标注；官方文档仅明确「去沙拉酱立减 60 kcal」这一处可验证数字
+4. 下单时在官方渠道的自定义配料中去掉对应酱料即可执行
 
 ---
 

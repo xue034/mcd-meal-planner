@@ -754,6 +754,90 @@ class TestCorrectionIntegrity(unittest.TestCase):
         )
 
 
+class TestSauceModule(unittest.TestCase):
+    """酱料减钠模块测试（含诚实标注断言）"""
+
+    def setUp(self):
+        import sauce
+        self.sauce = sauce
+
+    def test_modifiable_items_only_from_real_data(self):
+        """可去酱清单必须来自 query-meal-detail 实测（板烧/麦辣）"""
+        self.assertIn("板烧鸡腿堡", self.sauce.MODIFIABLE_ITEMS)
+        self.assertIn("麦辣鸡腿汉堡", self.sauce.MODIFIABLE_ITEMS)
+        # 不允许无依据地扩充清单
+        self.assertLessEqual(len(self.sauce.MODIFIABLE_ITEMS), 10)
+
+    def test_saving_is_range_not_point(self):
+        """减钠量必须是区间（低<高），体现估算的不确定性"""
+        low, high = self.sauce.estimate_sodium_saving("板烧鸡腿堡")
+        self.assertLess(low, high)
+        self.assertGreater(low, 0)
+
+    def test_unmodifiable_returns_none(self):
+        """未实测支持的餐品必须返回 None，不得生成建议"""
+        for name in ["巨无霸", "薯条", "麦乐鸡", "不存在的餐品"]:
+            self.assertIsNone(self.sauce.estimate_sodium_saving(name))
+            self.assertIsNone(self.sauce.get_sauce_options(name))
+
+    def test_report_contains_estimate_disclaimer(self):
+        """🔴 诚实标注断言：报告必须明确写"估算"且声明非官方数据"""
+        report = self.sauce.format_sauce_report(
+            ["板烧鸡腿堡", "薯条"], 1000
+        )
+        self.assertIn("估算", report)
+        self.assertIn("非麦当劳官方", report)
+        self.assertIn("–", report)  # 区间符号
+
+    def test_report_empty_for_non_modifiable(self):
+        """无可去酱餐品时返回空字符串，不硬凑输出"""
+        self.assertEqual(
+            self.sauce.format_sauce_report(["巨无霸", "薯条"], 1000), ""
+        )
+
+    def test_report_shows_improved_range(self):
+        """报告应给出"当前钠 → 去酱后区间"的完整对比"""
+        report = self.sauce.format_sauce_report(
+            ["板烧鸡腿堡"], 1041
+        )
+        self.assertIn("1041", report)
+        # 去酱后上限必须低于当前值
+        self.assertIn("691", report)  # 1041-350=691
+
+    def test_veggie_note_present(self):
+        """蔬菜类去料必须有"不计入减钠"说明"""
+        report = self.sauce.format_sauce_report(["板烧鸡腿堡"], 1041)
+        self.assertIn("不计入减钠", report)
+
+    def test_sauce_mode_end_to_end(self):
+        """sauce 模式端到端：主食品类过滤后仍能求解"""
+        planner_mod = sys.modules.get("planner")
+        if planner_mod is None:
+            import planner as planner_mod
+        items = planner_mod.load_items()
+        target = planner_mod.Target(kcal=800, mode="sauce")
+        mod_names = tuple(self.sauce.MODIFIABLE_ITEMS)
+        sauce_items = [
+            i for i in items
+            if i.category not in planner_mod._MAIN_CATEGORIES
+            or any(m in i.name for m in mod_names)
+        ]
+        combos = planner_mod.find_combos(sauce_items, target, limit=1)
+        self.assertTrue(combos)
+        # 主食必须是可去酱餐品
+        mains = [
+            i for i in combos[0].items
+            if i.category in planner_mod._MAIN_CATEGORIES
+        ]
+        self.assertTrue(
+            any(
+                any(m in i.name for m in mod_names) for i in mains
+            ),
+            "去酱优选方案的主食必须是实测支持去酱的餐品",
+        )
+
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("麦麦营养配餐助手 · 单元测试")
